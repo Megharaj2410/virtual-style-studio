@@ -1,6 +1,5 @@
-// Virtual Try-On edge function
-// Pipeline: validate input -> call Replicate IDM-VTON (person + garment) -> poll -> return result image
-// IDM-VTON internally handles: person detection, pose estimation, segmentation, garment warping & blending.
+// Virtual Try-On edge function (Gemini image editing via Lovable AI)
+// Takes a person photo + a garment image and composites a try-on result.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -9,13 +8,9 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Pinned IDM-VTON version on Replicate (high-quality realistic try-on)
-const MODEL_VERSION =
-  "c871bb9b046607b680449ecbae55fd8c6d945e0a1948644bf2361b3d021d3ff4";
-
 interface TryOnRequest {
   human_image: string; // data URL or https URL
-  garment_image: string; // https URL
+  garment_image: string; // data URL or https URL
   garment_description?: string;
   category?: "upper_body" | "lower_body" | "dresses";
 }
@@ -31,9 +26,9 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const REPLICATE_API_KEY = Deno.env.get("REPLICATE_API_KEY");
-    if (!REPLICATE_API_KEY) {
-      return json({ error: "REPLICATE_API_KEY is not configured" }, 500);
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    if (!LOVABLE_API_KEY) {
+      return json({ error: "LOVABLE_API_KEY is not configured" }, 500);
     }
 
     const body = (await req.json()) as TryOnRequest;
@@ -44,79 +39,79 @@ Deno.serve(async (req) => {
       return json({ error: "Invalid garment_image." }, 400);
     }
 
-    const input = {
-      human_img: body.human_image,
-      garm_img: body.garment_image,
-      garment_des: body.garment_description ?? "a clothing item",
-      category: body.category ?? "upper_body",
-      crop: false,
-      seed: 42,
-      steps: 30,
-    };
+    const garmentDesc = body.garment_description ?? "the clothing item";
+    const category = body.category ?? "upper_body";
+    const placement =
+      category === "lower_body"
+        ? "lower body (pants/skirt area)"
+        : category === "dresses"
+        ? "full body as a dress"
+        : "upper body (torso)";
 
-    // 1) Create prediction
-    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
+    const prompt = `Virtual try-on task. The FIRST image is a person. The SECOND image is ${garmentDesc}.
+Generate a new photo of the SAME person from the first image, now wearing ${garmentDesc} on their ${placement}.
+
+Strict requirements:
+- Keep the person's face, hair, skin tone, body shape, and pose IDENTICAL to the first image.
+- Keep the original background and lighting from the first image.
+- Replace only the relevant clothing area with the garment from the second image.
+- Match the garment's color, pattern, texture, and style faithfully.
+- Realistic fit, natural folds, correct shadows. Photorealistic result.
+- Do not add text, watermarks, or extra accessories.`;
+
+    const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${REPLICATE_API_KEY}`,
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
         "Content-Type": "application/json",
-        Prefer: "wait=60", // server holds the connection up to 60s if it finishes early
       },
-      body: JSON.stringify({ version: MODEL_VERSION, input }),
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-image",
+        modalities: ["image", "text"],
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: body.human_image } },
+              { type: "image_url", image_url: { url: body.garment_image } },
+            ],
+          },
+        ],
+      }),
     });
 
-    if (!createRes.ok) {
-      const err = await createRes.text();
-      console.error("Replicate create error:", createRes.status, err);
-      if (createRes.status === 401) {
-        return json({ error: "Invalid Replicate API key." }, 401);
+    if (!aiRes.ok) {
+      const errText = await aiRes.text();
+      console.error("Lovable AI error:", aiRes.status, errText);
+      if (aiRes.status === 429) {
+        return json({ error: "Rate limit reached. Please wait a moment and try again." }, 429);
       }
-      if (createRes.status === 402) {
-        return json({ error: "Replicate account requires billing setup or credits." }, 402);
+      if (aiRes.status === 402) {
+        return json(
+          { error: "AI credits exhausted. Add credits in Settings → Workspace → Usage." },
+          402,
+        );
       }
-      return json({ error: `Try-on service error (${createRes.status})` }, 502);
+      return json({ error: `Try-on service error (${aiRes.status})` }, 502);
     }
 
-    let prediction = await createRes.json();
+    const data = await aiRes.json();
+    const imageUrl: string | undefined =
+      data?.choices?.[0]?.message?.images?.[0]?.image_url?.url;
 
-    // 2) Poll until done (up to ~90s)
-    const started = Date.now();
-    while (
-      prediction.status !== "succeeded" &&
-      prediction.status !== "failed" &&
-      prediction.status !== "canceled" &&
-      Date.now() - started < 90_000
-    ) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const pollRes = await fetch(prediction.urls.get, {
-        headers: { Authorization: `Bearer ${REPLICATE_API_KEY}` },
-      });
-      if (!pollRes.ok) {
-        const err = await pollRes.text();
-        console.error("Replicate poll error:", pollRes.status, err);
-        break;
-      }
-      prediction = await pollRes.json();
-    }
-
-    if (prediction.status !== "succeeded") {
-      console.error("Prediction did not succeed:", prediction.status, prediction.error);
+    if (!imageUrl) {
+      console.error("No image in response:", JSON.stringify(data).slice(0, 500));
       return json(
         {
           error:
-            prediction.error ??
-            "Try-on failed. Make sure the photo clearly shows one person, facing forward, upper body visible.",
+            "No try-on image was produced. Try a clearer photo of one person facing forward.",
         },
-        422,
+        502,
       );
     }
 
-    const output = Array.isArray(prediction.output)
-      ? prediction.output[0]
-      : prediction.output;
-    if (!output) return json({ error: "No output produced." }, 502);
-
-    return json({ image_url: output, prediction_id: prediction.id }, 200);
+    return json({ image_url: imageUrl }, 200);
   } catch (e) {
     console.error("virtual-tryon error:", e);
     return json({ error: e instanceof Error ? e.message : "Unknown error" }, 500);
