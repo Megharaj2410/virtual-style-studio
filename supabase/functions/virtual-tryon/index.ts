@@ -104,8 +104,8 @@ Strict requirements:
             role: "user",
             content: [
               { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: body.human_image } },
-              { type: "image_url", image_url: { url: body.garment_image } },
+              { type: "image_url", image_url: { url: humanDataUrl } },
+              { type: "image_url", image_url: { url: garmentDataUrl } },
             ],
           },
         ],
