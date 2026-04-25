@@ -17,15 +17,30 @@ const Index = () => {
 
   const canTryOn = useMemo(() => !!photo && !!garment && !loading, [photo, garment, loading]);
 
+  const fetchAsDataUrl = async (src: string): Promise<string> => {
+    const r = await fetch(src);
+    const blob = await r.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  };
+
   const handleTryOn = async () => {
     if (!photo || !garment) return;
     setLoading(true);
     setResult(null);
     try {
+      // Convert the bundled garment asset to a data URL in the browser,
+      // since Vite-served /src/assets/... URLs aren't fetchable as images server-side.
+      const garmentDataUrl = await fetchAsDataUrl(garment.thumbnail);
+
       const { data, error } = await supabase.functions.invoke("virtual-tryon", {
         body: {
           human_image: photo,
-          garment_image: garment.publicUrl,
+          garment_image: garmentDataUrl,
           garment_description: garment.description,
           category: garment.category,
         },
