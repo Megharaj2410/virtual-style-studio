@@ -79,16 +79,7 @@ Deno.serve(async (req) => {
         ? "full body as a dress"
         : "upper body (torso)";
 
-    const prompt = `Virtual try-on task. The FIRST image is a person. The SECOND image is ${garmentDesc}.
-Generate a new photo of the SAME person from the first image, now wearing ${garmentDesc} on their ${placement}.
-
-Strict requirements:
-- Keep the person's face, hair, skin tone, body shape, and pose IDENTICAL to the first image.
-- Keep the original background and lighting from the first image.
-- Replace only the relevant clothing area with the garment from the second image.
-- Match the garment's color, pattern, texture, and style faithfully.
-- Realistic fit, natural folds, correct shadows. Photorealistic result.
-- Do not add text, watermarks, or extra accessories.`;
+    const prompt = `Output ONLY an image, no text. Virtual try-on: take the person from the FIRST image and dress them in ${garmentDesc} (shown in the SECOND image) on their ${placement}. Preserve the person's face, hair, skin, body shape, pose, background, and lighting EXACTLY. Replace only the clothing in the ${placement} area with the garment, matching its color, pattern, and texture faithfully. Photorealistic, natural fit and shadows. No text, no watermarks.`;
 
     const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
