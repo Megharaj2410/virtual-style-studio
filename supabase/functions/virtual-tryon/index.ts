@@ -39,6 +39,37 @@ Deno.serve(async (req) => {
       return json({ error: "Invalid garment_image." }, 400);
     }
 
+    // Gemini fetches https URLs itself but our garment URLs point to Vite-served
+    // module paths that return JS, not images. Fetch + convert to data URL ourselves.
+    const toDataUrl = async (src: string): Promise<string> => {
+      if (src.startsWith("data:image/")) return src;
+      const r = await fetch(src);
+      if (!r.ok) throw new Error(`Failed to fetch image (${r.status}): ${src}`);
+      const ct = r.headers.get("content-type") ?? "";
+      if (!ct.startsWith("image/")) {
+        throw new Error(`URL did not return an image (got ${ct}): ${src}`);
+      }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+      return `data:${ct};base64,${btoa(bin)}`;
+    };
+
+    let humanDataUrl: string;
+    let garmentDataUrl: string;
+    try {
+      [humanDataUrl, garmentDataUrl] = await Promise.all([
+        toDataUrl(body.human_image),
+        toDataUrl(body.garment_image),
+      ]);
+    } catch (e) {
+      console.error("Image fetch error:", e);
+      return json(
+        { error: e instanceof Error ? e.message : "Could not load input images." },
+        400,
+      );
+    }
+
     const garmentDesc = body.garment_description ?? "the clothing item";
     const category = body.category ?? "upper_body";
     const placement =
