@@ -45,7 +45,19 @@ const Index = () => {
           category: garment.category,
         },
       });
-      if (error) throw error;
+      if (error) {
+        const context = "context" in error ? error.context : null;
+        const payload = context instanceof Response
+          ? await context.clone().json().catch(() => null)
+          : null;
+        const message = typeof payload?.error === "string" ? payload.error : error.message;
+        toast.error("AI credits exhausted", {
+          description: message.includes("credits")
+            ? "Add AI credits in Settings → Workspace → Usage, then try again."
+            : message,
+        });
+        return;
+      }
       if (data?.error) throw new Error(data.error);
       if (!data?.image_url) throw new Error("No image returned");
       setResult(data.image_url);
